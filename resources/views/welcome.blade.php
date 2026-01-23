@@ -199,7 +199,7 @@
         </div>
     </section>
     <!-- TEAM -->
-<section class="py-24 bg-white" id="equipo">
+<!-- <section class="py-24 bg-white" id="equipo">
     <div class="max-w-6xl mx-auto px-6 text-center">
         <h3 class="text-3xl font-semibold mb-12">Equipo de Desarrollo</h3>
 
@@ -218,7 +218,7 @@
         </div>
         <span>Para mas información contacta a traves de: l22020879@veracruz.tecnm.mx</span>
     </div>
-</section>
+</section> -->
 
 
     <!-- FOOTER -->
