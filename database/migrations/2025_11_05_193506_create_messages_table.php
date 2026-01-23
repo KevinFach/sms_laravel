@@ -13,10 +13,10 @@ return new class extends Migration
     {
         Schema::create('messages', function (Blueprint $table) {
             $table->id();
-            $table->string('mensaje');
-            $table->char('numero',13);
+            $table->string('msg_id', 100)->unique();
+            $table->text('mensaje');
+            $table->text('numero');
             $table->boolean('estatus')->default(true);
-            $table->string('msg_id', 100)->unique()->after('id');
             $table->dateTime('fecha');
             $table->timestamps();
         });
