@@ -1,0 +1,298 @@
+/* Arduino UNO + SIM900 (Versión FINAL AUTO-REPARABLE)
+   - Incluye "Watchdog": Si falla 3 veces, reinicia la red solo.
+   - Soluciona el problema de que deje de recibir mensajes tras un rato.
+*/
+
+#include <SoftwareSerial.h>
+SoftwareSerial sim900(2, 3); // RX, TX
+
+// --- CONFIGURACIÓN ---
+const char* servidor = "mensajeria.51x.mx";
+const char* token = "0exkKuCZsC"; 
+
+// Variable para contar errores consecutivos
+int erroresRed = 0; 
+
+// --- PROTOTIPOS ---
+void enviarSMS(String numero, String mensaje);
+void enviarConfirmacion(String id);
+String obtenerHTTP(String url);
+String leerRespuestaCompleta(unsigned long timeout);
+void enviarComando(String cmd); 
+void enviarComando(const __FlashStringHelper* cmd);
+bool verificarConexion();
+
+void setup() {
+  Serial.begin(9600);
+  sim900.begin(9600);
+  delay(1000);
+
+  erroresRed = 0; // Reiniciamos contador al arrancar
+
+  Serial.println(F("\n=== INICIANDO SISTEMA (Auto-Reparable) ==="));
+  enviarComando(F("AT")); 
+
+  // 1. ESPERAR SEÑAL
+  bool registrado = false;
+  while (!registrado) {
+    Serial.print(F("Buscando red... "));
+    sim900.println(F("AT+CREG?"));
+    String resp = leerRespuestaCompleta(1500);
+    
+    if (resp.indexOf("0,1") != -1 || resp.indexOf("0,5") != -1) {
+      registrado = true;
+      Serial.println(F("REGISTRADO OK."));
+    } else {
+      Serial.println(F("Sin señal. Reintentando..."));
+      delay(2000);
+    }
+  }
+
+  // 2. CONFIGURAR GPRS
+  Serial.println(F("--- Configurando GPRS ---"));
+  enviarComando(F("AT+SAPBR=0,1")); // Reset preventivo
+  delay(1000);
+  enviarComando(F("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\""));
+  enviarComando(F("AT+SAPBR=3,1,\"APN\",\"internet.itelcel.com\""));
+
+  // 3. OBTENER IP
+  bool conectado = false;
+  int intentos = 0;
+  while (!conectado) {
+    Serial.println(F("Solicitando IP..."));
+    sim900.println(F("AT+SAPBR=1,1")); 
+    delay(6000); 
+    leerRespuestaCompleta(1000);
+    
+    sim900.println(F("AT+SAPBR=2,1"));
+    String ipResp = leerRespuestaCompleta(3000);
+    Serial.print(F("IP: ")); Serial.println(ipResp);
+    
+    if (ipResp.indexOf("\"") != -1 && ipResp.indexOf("0.0.0.0") == -1) {
+      conectado = true;
+      Serial.println(F(">>> INTERNET LISTO <<<"));
+    } else {
+      intentos++;
+      Serial.print(F("Fallo IP #")); Serial.println(intentos);
+      if (intentos > 2) {
+         Serial.println(F("Reiniciando perfil GPRS..."));
+         enviarComando(F("AT+SAPBR=0,1"));
+         delay(2000);
+         intentos = 0;
+      }
+    }
+  }
+}
+
+void loop() {
+  // 1. Verificación básica (IP)
+  if (!verificarConexion()) {
+    Serial.println(F("! IP perdida. Reconectando..."));
+    setup(); 
+    return;
+  }
+
+  // 2. Verificación AVANZADA (Watchdog)
+  // Si hemos fallado 3 veces seguidas al intentar leer mensajes, reiniciamos.
+  if (erroresRed >= 3) {
+    Serial.println(F("!!! DETECTADA CONEXION ZOMBI (3 Fallos) !!!"));
+    Serial.println(F("Reiniciando sistema de red..."));
+    delay(1000);
+    setup(); // Esto reinicia todo el proceso de conexión
+    return;
+  }
+
+  String url = "http://";
+  url += servidor;
+  url += "/api/pendientes?token=";
+  url += token;
+  
+  Serial.println(F("\n--- Buscando mensajes ---"));
+  
+  // Llamamos a la función (ella misma actualiza la variable 'erroresRed')
+  String respuesta = obtenerHTTP(url);
+
+  // Si la respuesta está vacía (y no fue error 200), obtenerHTTP ya aumentó el contador de error
+  if (respuesta.length() == 0) {
+    // Si fue un error real, 'erroresRed' habrá subido.
+    // Si fue solo que no hay mensajes (200 OK), 'erroresRed' será 0.
+    if (erroresRed == 0) {
+       Serial.println(F("Bandeja vacia."));
+    } else {
+       Serial.print(F("Fallo de lectura. Errores acumulados: "));
+       Serial.println(erroresRed);
+    }
+    Serial.println(F("Esperando 10s..."));
+    delay(10000);
+    return;
+  }
+
+  Serial.println(F(">>> DATOS RECIBIDOS <<<"));
+  // Si llegamos aqui, es que hubo exito, asi que reseteamos errores por seguridad
+  erroresRed = 0; 
+
+  // --- PROCESAR MENSAJES ---
+  int startIdx = 0;
+  while (startIdx < respuesta.length()) {
+    int endIdx = respuesta.indexOf('\n', startIdx);
+    String linea = (endIdx == -1) ? respuesta.substring(startIdx) : respuesta.substring(startIdx, endIdx);
+    startIdx = (endIdx == -1) ? respuesta.length() : endIdx + 1;
+
+    linea.trim();
+    if (linea.length() == 0) continue;
+
+    int p1 = linea.indexOf('|');
+    int p2 = linea.indexOf('|', p1 + 1);
+
+    if (p1 != -1 && p2 != -1) {
+      String id = linea.substring(0, p1);
+      String numero = linea.substring(p1 + 1, p2);
+      String mensaje = linea.substring(p2 + 1);
+      
+      id.trim(); numero.trim(); mensaje.trim();
+
+      Serial.println(F(">>> ENVIAR SMS <<<"));
+      Serial.print(F("Destino: ")); Serial.println(numero);
+      
+      if (numero.length() >= 10) {
+        enviarSMS(numero, mensaje);
+        delay(2000);
+        enviarConfirmacion(id);
+      }
+    }
+  }
+  
+  Serial.println(F("Ciclo terminado. Esperando 10s..."));
+  delay(10000);
+}
+
+// --- FUNCIONES AUXILIARES ---
+
+bool verificarConexion() {
+  sim900.println(F("AT+SAPBR=2,1"));
+  String resp = leerRespuestaCompleta(1000);
+  if (resp.indexOf("0.0.0.0") != -1 || resp.indexOf("ERROR") != -1) return false;
+  return true;
+}
+
+void enviarComando(String cmd) {
+  Serial.print(F("CMD: ")); Serial.println(cmd);
+  sim900.println(cmd);
+  unsigned long start = millis();
+  while(millis() - start < 1000) while(sim900.available()) Serial.write(sim900.read());
+  Serial.println();
+}
+
+void enviarComando(const __FlashStringHelper* cmd) {
+  Serial.print(F("CMD: ")); Serial.println(cmd);
+  sim900.println(cmd);
+  unsigned long start = millis();
+  while(millis() - start < 1000) while(sim900.available()) Serial.write(sim900.read());
+  Serial.println();
+}
+
+// FUNCIÓN HTTP CON CONTADOR DE ERRORES
+String obtenerHTTP(String url) {
+  sim900.println(F("AT+HTTPTERM")); delay(200);
+  sim900.println(F("AT+HTTPINIT")); delay(500);
+  sim900.println(F("AT+HTTPPARA=\"CID\",1")); delay(200);
+  
+  sim900.print(F("AT+HTTPPARA=\"URL\",\"")); 
+  sim900.print(url); 
+  sim900.println("\""); 
+  delay(300);
+  
+  Serial.println(F("Enviando GET..."));
+  sim900.println(F("AT+HTTPACTION=0")); 
+  
+  unsigned long tInicio = millis();
+  int httpCode = 0;
+  bool listo = false;
+  
+  // Esperar respuesta (timeout 15s)
+  while(millis() - tInicio < 15000) {
+    while(sim900.available()) {
+      String linea = sim900.readStringUntil('\n');
+      
+      if(linea.startsWith("+HTTPACTION:")) {
+        Serial.print(F("STATUS: ")); Serial.println(linea); 
+        int p1 = linea.indexOf(',');
+        int p2 = linea.indexOf(',', p1 + 1);
+        if(p1 != -1 && p2 != -1) {
+           httpCode = linea.substring(p1+1, p2).toInt();
+        }
+        listo = true;
+      }
+    }
+    if(listo) break;
+  }
+  
+  String raw = "";
+
+  // LOGICA DEL WATCHDOG
+  if(httpCode == 200) {
+    // Éxito: Reiniciamos contador de fallos
+    erroresRed = 0; 
+    
+    Serial.println(F("Descargando..."));
+    sim900.println(F("AT+HTTPREAD"));
+    raw = leerRespuestaCompleta(5000);
+    
+    Serial.println(F("--- DATOS INICIO ---"));
+    Serial.println(raw);
+    Serial.println(F("--- DATOS FIN ---"));
+    
+  } else {
+    // Fallo (Código 0, 601, 603, etc): Aumentamos contador
+    erroresRed++;
+    Serial.print(F("Error HTTP: ")); Serial.println(httpCode);
+    Serial.print(F("Errores consecutivos: ")); Serial.println(erroresRed);
+  }
+  
+  sim900.println(F("AT+HTTPTERM"));
+  return raw;
+}
+
+void enviarSMS(String numero, String mensaje) {
+  Serial.println(F("Enviando SMS..."));
+  sim900.println(F("AT+CMGF=1")); delay(500);
+  sim900.print(F("AT+CMGS=\"")); sim900.print(numero); sim900.println("\""); delay(1000);
+  sim900.print(mensaje); delay(100);
+  sim900.write(26); 
+  leerRespuestaCompleta(5000);
+}
+
+void enviarConfirmacion(String id) {
+  Serial.print(F("Confirmando ID: ")); Serial.println(id);
+  sim900.println(F("AT+HTTPTERM")); delay(200);
+  sim900.println(F("AT+HTTPINIT")); delay(500);
+  sim900.println(F("AT+HTTPPARA=\"CID\",1")); delay(200);
+  sim900.print(F("AT+HTTPPARA=\"URL\",\"http://"));
+  sim900.print(servidor);
+  sim900.print(F("/api/mensaje/"));
+  sim900.print(id);
+  sim900.print(F("/procesado?token="));
+  sim900.print(token);
+  sim900.println("\"");
+  delay(300);
+  sim900.println(F("AT+HTTPPARA=\"CONTENT\",\"application/json\"")); delay(300);
+  sim900.println(F("AT+HTTPDATA=2,3000")); delay(200);
+  sim900.print("{}"); delay(200);
+  sim900.println(F("AT+HTTPACTION=1"));
+  leerRespuestaCompleta(4000);
+  sim900.println(F("AT+HTTPTERM"));
+}
+
+String leerRespuestaCompleta(unsigned long timeout) {
+  String s = "";
+  s.reserve(100); 
+  unsigned long start = millis();
+  while (millis() - start < timeout) {
+    while (sim900.available()) {
+      char c = sim900.read();
+      s += c;
+      start = millis();
+    }
+  }
+  return s;
+}
