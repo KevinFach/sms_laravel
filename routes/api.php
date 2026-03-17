@@ -9,7 +9,7 @@ Route::get('/user', function (Request $request) {
 })->middleware('auth:sanctum');
 
 
-Route::post('/mensaje/{id}/procesado', [MensajeController::class, 'marcarComoProcesado']);
+Route::match(['get', 'post'], '/mensaje/{id}/procesado', [MensajeController::class, 'marcarComoProcesado']);
 
 Route::middleware('api.token')->group(function () {
     // La ruta final será: /api/pendientes

@@ -1,6 +1,7 @@
-/* Arduino UNO + SIM900 (Versión FINAL AUTO-REPARABLE)
-   - Incluye "Watchdog": Si falla 3 veces, reinicia la red solo.
-   - Soluciona el problema de que deje de recibir mensajes tras un rato.
+/* Arduino UNO + SIM900 (Versión FINAL AUTO-REPARABLE + FIX 603)
+   - Incluye "Watchdog" de errores acumulados.
+   - Fix Error 603: Estabilización de DNS y limpieza de portador.
+   - Fix Confirmación: Cambio a GET para asegurar registro en plataforma.
 */
 
 #include <SoftwareSerial.h>
@@ -10,7 +11,6 @@ SoftwareSerial sim900(2, 3); // RX, TX
 const char* servidor = "mensajeria.51x.mx";
 const char* token = "0exkKuCZsC"; 
 
-// Variable para contar errores consecutivos
 int erroresRed = 0; 
 
 // --- PROTOTIPOS ---
@@ -27,9 +27,9 @@ void setup() {
   sim900.begin(9600);
   delay(1000);
 
-  erroresRed = 0; // Reiniciamos contador al arrancar
+  erroresRed = 0; 
 
-  Serial.println(F("\n=== INICIANDO SISTEMA (Auto-Reparable) ==="));
+  Serial.println(F("\n=== INICIANDO SISTEMA (Auto-Reparable v2) ==="));
   enviarComando(F("AT")); 
 
   // 1. ESPERAR SEÑAL
@@ -48,57 +48,59 @@ void setup() {
     }
   }
 
-  // 2. CONFIGURAR GPRS
+  // 2. CONFIGURAR GPRS Y DNS (Fix para Error 603)
   Serial.println(F("--- Configurando GPRS ---"));
   enviarComando(F("AT+SAPBR=0,1")); // Reset preventivo
   delay(1000);
   enviarComando(F("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\""));
   enviarComando(F("AT+SAPBR=3,1,\"APN\",\"internet.itelcel.com\""));
+  // Agregamos DNS de Google para evitar que se pierda la ruta al servidor
+  enviarComando(F("AT+CDNSCFG=\"8.8.8.8\",\"8.8.4.4\"")); 
 
   // 3. OBTENER IP
+  conectarPortador();
+}
+
+void conectarPortador() {
   bool conectado = false;
   int intentos = 0;
-  while (!conectado) {
+  while (!conectado && intentos < 3) {
     Serial.println(F("Solicitando IP..."));
     sim900.println(F("AT+SAPBR=1,1")); 
-    delay(6000); 
-    leerRespuestaCompleta(1000);
+    delay(5000); 
     
     sim900.println(F("AT+SAPBR=2,1"));
     String ipResp = leerRespuestaCompleta(3000);
     Serial.print(F("IP: ")); Serial.println(ipResp);
     
-    if (ipResp.indexOf("\"") != -1 && ipResp.indexOf("0.0.0.0") == -1) {
+    if (ipResp.indexOf("0.0.0.0") == -1 && ipResp.indexOf(".") != -1) {
       conectado = true;
       Serial.println(F(">>> INTERNET LISTO <<<"));
     } else {
       intentos++;
       Serial.print(F("Fallo IP #")); Serial.println(intentos);
-      if (intentos > 2) {
-         Serial.println(F("Reiniciando perfil GPRS..."));
+      if (intentos >= 3) {
+         Serial.println(F("Reintentando perfil..."));
          enviarComando(F("AT+SAPBR=0,1"));
          delay(2000);
-         intentos = 0;
       }
     }
   }
 }
 
 void loop() {
-  // 1. Verificación básica (IP)
+  // 1. Verificación básica (Contexto activo)
   if (!verificarConexion()) {
-    Serial.println(F("! IP perdida. Reconectando..."));
-    setup(); 
+    Serial.println(F("! IP perdida o Contexto cerrado. Reconectando..."));
+    conectarPortador();
     return;
   }
 
-  // 2. Verificación AVANZADA (Watchdog)
-  // Si hemos fallado 3 veces seguidas al intentar leer mensajes, reiniciamos.
+  // 2. Verificación Watchdog
   if (erroresRed >= 3) {
-    Serial.println(F("!!! DETECTADA CONEXION ZOMBI (3 Fallos) !!!"));
-    Serial.println(F("Reiniciando sistema de red..."));
+    Serial.println(F("!!! CONEXION ZOMBI - REINICIO TOTAL !!!"));
     delay(1000);
-    setup(); // Esto reinicia todo el proceso de conexión
+    setup(); 
     return;
   }
 
@@ -108,27 +110,16 @@ void loop() {
   url += token;
   
   Serial.println(F("\n--- Buscando mensajes ---"));
-  
-  // Llamamos a la función (ella misma actualiza la variable 'erroresRed')
   String respuesta = obtenerHTTP(url);
 
-  // Si la respuesta está vacía (y no fue error 200), obtenerHTTP ya aumentó el contador de error
   if (respuesta.length() == 0) {
-    // Si fue un error real, 'erroresRed' habrá subido.
-    // Si fue solo que no hay mensajes (200 OK), 'erroresRed' será 0.
-    if (erroresRed == 0) {
-       Serial.println(F("Bandeja vacia."));
-    } else {
-       Serial.print(F("Fallo de lectura. Errores acumulados: "));
-       Serial.println(erroresRed);
-    }
-    Serial.println(F("Esperando 10s..."));
+    if (erroresRed == 0) Serial.println(F("Bandeja vacia."));
+    else Serial.println(F("Fallo de lectura."));
     delay(10000);
     return;
   }
 
   Serial.println(F(">>> DATOS RECIBIDOS <<<"));
-  // Si llegamos aqui, es que hubo exito, asi que reseteamos errores por seguridad
   erroresRed = 0; 
 
   // --- PROCESAR MENSAJES ---
@@ -139,7 +130,7 @@ void loop() {
     startIdx = (endIdx == -1) ? respuesta.length() : endIdx + 1;
 
     linea.trim();
-    if (linea.length() == 0) continue;
+    if (linea.length() < 5) continue;
 
     int p1 = linea.indexOf('|');
     int p2 = linea.indexOf('|', p1 + 1);
@@ -152,16 +143,18 @@ void loop() {
       id.trim(); numero.trim(); mensaje.trim();
 
       Serial.println(F(">>> ENVIAR SMS <<<"));
-      Serial.print(F("Destino: ")); Serial.println(numero);
+      enviarSMS(numero, mensaje);
       
-      if (numero.length() >= 10) {
-        enviarSMS(numero, mensaje);
-        delay(2000);
-        enviarConfirmacion(id);
-      }
+      // PAUSA CRITICA: El SIM900 necesita tiempo para volver a GPRS tras un SMS
+      delay(3500); 
+      enviarConfirmacion(id);
+      delay(1000);
     }
   }
   
+  // LIMPIEZA POST-CICLO (Evita que la sesión se trabe)
+  sim900.println(F("AT+HTTPTERM"));
+  delay(500);
   Serial.println(F("Ciclo terminado. Esperando 10s..."));
   delay(10000);
 }
@@ -171,51 +164,42 @@ void loop() {
 bool verificarConexion() {
   sim900.println(F("AT+SAPBR=2,1"));
   String resp = leerRespuestaCompleta(1000);
-  if (resp.indexOf("0.0.0.0") != -1 || resp.indexOf("ERROR") != -1) return false;
-  return true;
+  // Verificamos que el estado sea 1 (Conectado)
+  if (resp.indexOf("1,1,\"") != -1) return true;
+  return false;
 }
 
 void enviarComando(String cmd) {
-  Serial.print(F("CMD: ")); Serial.println(cmd);
   sim900.println(cmd);
   unsigned long start = millis();
-  while(millis() - start < 1000) while(sim900.available()) Serial.write(sim900.read());
-  Serial.println();
+  while(millis() - start < 800) while(sim900.available()) Serial.write(sim900.read());
 }
 
 void enviarComando(const __FlashStringHelper* cmd) {
-  Serial.print(F("CMD: ")); Serial.println(cmd);
   sim900.println(cmd);
   unsigned long start = millis();
-  while(millis() - start < 1000) while(sim900.available()) Serial.write(sim900.read());
-  Serial.println();
+  while(millis() - start < 800) while(sim900.available()) Serial.write(sim900.read());
 }
 
-// FUNCIÓN HTTP CON CONTADOR DE ERRORES
 String obtenerHTTP(String url) {
   sim900.println(F("AT+HTTPTERM")); delay(200);
-  sim900.println(F("AT+HTTPINIT")); delay(500);
+  sim900.println(F("AT+HTTPINIT")); delay(300);
   sim900.println(F("AT+HTTPPARA=\"CID\",1")); delay(200);
-  
   sim900.print(F("AT+HTTPPARA=\"URL\",\"")); 
   sim900.print(url); 
   sim900.println("\""); 
   delay(300);
   
-  Serial.println(F("Enviando GET..."));
   sim900.println(F("AT+HTTPACTION=0")); 
   
   unsigned long tInicio = millis();
   int httpCode = 0;
   bool listo = false;
   
-  // Esperar respuesta (timeout 15s)
   while(millis() - tInicio < 15000) {
     while(sim900.available()) {
       String linea = sim900.readStringUntil('\n');
-      
-      if(linea.startsWith("+HTTPACTION:")) {
-        Serial.print(F("STATUS: ")); Serial.println(linea); 
+      if(linea.indexOf("+HTTPACTION:") != -1) {
         int p1 = linea.indexOf(',');
         int p2 = linea.indexOf(',', p1 + 1);
         if(p1 != -1 && p2 != -1) {
@@ -228,64 +212,53 @@ String obtenerHTTP(String url) {
   }
   
   String raw = "";
-
-  // LOGICA DEL WATCHDOG
   if(httpCode == 200) {
-    // Éxito: Reiniciamos contador de fallos
     erroresRed = 0; 
-    
-    Serial.println(F("Descargando..."));
     sim900.println(F("AT+HTTPREAD"));
     raw = leerRespuestaCompleta(5000);
-    
-    Serial.println(F("--- DATOS INICIO ---"));
-    Serial.println(raw);
-    Serial.println(F("--- DATOS FIN ---"));
-    
   } else {
-    // Fallo (Código 0, 601, 603, etc): Aumentamos contador
     erroresRed++;
     Serial.print(F("Error HTTP: ")); Serial.println(httpCode);
-    Serial.print(F("Errores consecutivos: ")); Serial.println(erroresRed);
   }
   
-  sim900.println(F("AT+HTTPTERM"));
   return raw;
 }
 
 void enviarSMS(String numero, String mensaje) {
-  Serial.println(F("Enviando SMS..."));
+  Serial.print(F("Enviando a ")); Serial.println(numero);
   sim900.println(F("AT+CMGF=1")); delay(500);
   sim900.print(F("AT+CMGS=\"")); sim900.print(numero); sim900.println("\""); delay(1000);
   sim900.print(mensaje); delay(100);
   sim900.write(26); 
-  leerRespuestaCompleta(5000);
+  Serial.println(leerRespuestaCompleta(5000)); // Ver respuesta del envío
 }
 
 void enviarConfirmacion(String id) {
   Serial.print(F("Confirmando ID: ")); Serial.println(id);
   sim900.println(F("AT+HTTPTERM")); delay(200);
-  sim900.println(F("AT+HTTPINIT")); delay(500);
+  sim900.println(F("AT+HTTPINIT")); delay(300);
   sim900.println(F("AT+HTTPPARA=\"CID\",1")); delay(200);
-  sim900.print(F("AT+HTTPPARA=\"URL\",\"http://"));
-  sim900.print(servidor);
-  sim900.print(F("/api/mensaje/"));
-  sim900.print(id);
-  sim900.print(F("/procesado?token="));
-  sim900.print(token);
+  
+  // CAMBIO CLAVE: Usamos http para confirmar, es más compatible con SIM900
+  String urlConf = "http://"; // SE MODIFICÓ de https a http
+  urlConf += servidor;
+  urlConf += "/api/mensaje/";
+  urlConf += id;
+  urlConf += "/procesado?token=";
+  urlConf += token;
+
+  sim900.print(F("AT+HTTPPARA=\"URL\",\""));
+  sim900.print(urlConf);
   sim900.println("\"");
   delay(300);
-  sim900.println(F("AT+HTTPPARA=\"CONTENT\",\"application/json\"")); delay(300);
-  sim900.println(F("AT+HTTPDATA=2,3000")); delay(200);
-  sim900.print("{}"); delay(200);
-  sim900.println(F("AT+HTTPACTION=1"));
+
+  sim900.println(F("AT+HTTPACTION=0")); // Acción GET
   leerRespuestaCompleta(4000);
   sim900.println(F("AT+HTTPTERM"));
 }
 
 String leerRespuestaCompleta(unsigned long timeout) {
   String s = "";
-  s.reserve(100); 
   unsigned long start = millis();
   while (millis() - start < timeout) {
     while (sim900.available()) {

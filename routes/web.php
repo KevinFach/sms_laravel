@@ -25,7 +25,7 @@ Route::middleware(['auth'])->group(function () {
         ->middleware(
             when(
                 Features::canManageTwoFactorAuthentication()
-                    && Features::optionEnabled(Features::twoFactorAuthentication(), 'confirmPassword'),
+                && Features::optionEnabled(Features::twoFactorAuthentication(), 'confirmPassword'),
                 ['password.confirm'],
                 [],
             ),
@@ -41,6 +41,13 @@ Route::middleware([
     Route::get('/dashboard', function () {
         return view('dashboard');
     })->name('dashboard');
+});
+
+
+Route::get('/actualizar-base-datos', function () {
+    // Ejecuta las migraciones
+    Artisan::call('migrate', ["--force" => true]);
+    return '<h1>¡Base de datos actualizada!</h1><br>' . nl2br(Artisan::output());
 });
 
 

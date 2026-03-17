@@ -1,0 +1,188 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// --- CONFIGURACIÓN WIFI ---
+const char* ssid     = "Casa 2.4";
+const char* password = "1A2B3C4D5f";
+
+// --- CONFIGURACIÓN API ---
+const char* servidor = "http://mensajeria.51x.mx";
+const char* token    = "0exkKuCZsC"; 
+
+// --- PINES LILYGO T-SIM7600E ---
+#define MODEM_TX            27
+#define MODEM_RX            26
+#define MODEM_PWRKEY        4
+#define MODEM_BAUD          115200
+
+// --- VARIABLES DE CONTROL ---
+unsigned long ultimaConsulta = 0;
+const unsigned long intervaloConsulta = 10000; // 10 segundos
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 1. Inicializar comunicación con SIM7600E
+  // Usamos Serial1 (Hardware Serial) para mayor estabilidad
+  Serial1.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
+
+  // 2. Encendido físico del módem
+  Serial.println("Encendiendo módem SIM7600E...");
+  pinMode(MODEM_PWRKEY, OUTPUT);
+  digitalWrite(MODEM_PWRKEY, LOW);
+  delay(100);
+  digitalWrite(MODEM_PWRKEY, HIGH);
+  delay(1000); // Pulso de 1 segundo
+  digitalWrite(MODEM_PWRKEY, LOW);
+  
+  // Esperar a que el módem inicie su firmware
+  delay(5000);
+  Serial1.println("AT+CMGF=1"); // Configurar SMS en modo texto
+  
+  // 3. Conectar a WiFi
+  conectarWiFi();
+  
+  Serial.println("\n=== SISTEMA HÍBRIDO LISTO ===");
+}
+
+void loop() {
+  // Mantener WiFi vivo
+  if (WiFi.status() != WL_CONNECTED) {
+    conectarWiFi();
+  }
+
+  // Consultar API cada cierto tiempo
+  if (millis() - ultimaConsulta > intervaloConsulta) {
+    consultarPendientes();
+    ultimaConsulta = millis();
+  }
+}
+
+void conectarWiFi() {
+  Serial.print("Conectando a WiFi...");
+  WiFi.begin(ssid, password);
+  
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(500);
+    Serial.print(".");
+    intentos++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[WiFi] Conectado. IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println("\n[WiFi] Error al conectar.");
+  }
+}
+
+void consultarPendientes() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  String url = String(servidor) + "/api/pendientes?token=" + token;
+  
+  Serial.println("\n[API] Consultando mensajes pendientes...");
+  http.begin(url);
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == 200) {
+    String respuesta = http.getString();
+    respuesta.trim();
+    
+    if (respuesta.length() > 5) {
+      Serial.println("[API] Datos recibidos: " + respuesta);
+      procesarRespuesta(respuesta);
+    } else {
+      Serial.println("[API] Sin mensajes nuevos.");
+    }
+  } else {
+    Serial.printf("[API] Error HTTP: %d\n", httpCode);
+  }
+  http.end();
+}
+
+void procesarRespuesta(String respuesta) {
+  int startIdx = 0;
+  
+  while (startIdx < respuesta.length()) {
+    int endIdx = respuesta.indexOf('\n', startIdx);
+    String linea = (endIdx == -1) ? respuesta.substring(startIdx) : respuesta.substring(startIdx, endIdx);
+    startIdx = (endIdx == -1) ? respuesta.length() : endIdx + 1;
+
+    linea.trim();
+    if (linea.length() < 5) continue;
+
+    // Parseo por Pipes | (ID|NUMERO|MENSAJE)
+    int p1 = linea.indexOf('|');
+    int p2 = linea.indexOf('|', p1 + 1);
+
+    if (p1 != -1 && p2 != -1) {
+      String id      = linea.substring(0, p1);
+      String numero  = linea.substring(p1 + 1, p2);
+      String mensaje = linea.substring(p2 + 1);
+      
+      id.trim(); numero.trim(); mensaje.trim();
+
+      Serial.println("---------------------------");
+      Serial.println("ID: " + id);
+      Serial.println("Número: " + numero);
+      Serial.println("Mensaje: " + mensaje);
+      
+      if (enviarSMS(numero, mensaje)) {
+        confirmarProcesado(id);
+      }
+      delay(2000); // Pausa entre envíos
+    }
+  }
+}
+
+bool enviarSMS(String numero, String mensaje) {
+  Serial.println("[SMS] Enviando...");
+  
+  Serial1.print("AT+CMGS=\"");
+  Serial1.print(numero);
+  Serial1.println("\"");
+  
+  delay(500); // Esperar el prompt '>'
+  Serial1.print(mensaje);
+  delay(100);
+  Serial1.write(26); // Comando Ctrl+Z para enviar
+  
+  // Esperar respuesta del módem
+  unsigned long start = millis();
+  String resp = "";
+  while (millis() - start < 8000) { // Timeout de 8 seg
+    while (Serial1.available()) {
+      resp += (char)Serial1.read();
+    }
+    if (resp.indexOf("OK") != -1) {
+      Serial.println("[SMS] Enviado con éxito.");
+      return true;
+    }
+    if (resp.indexOf("ERROR") != -1) break;
+  }
+  
+  Serial.println("[SMS] Falló el envío. Verifique señal/saldo.");
+  return false;
+}
+
+void confirmarProcesado(String id) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  // URL de confirmación según tu API
+  String urlConf = String(servidor) + "/api/mensaje/" + id + "/procesado?token=" + token;
+  
+  Serial.println("[API] Confirmando ID " + id + "...");
+  http.begin(urlConf);
+  int httpCode = http.GET();
+  
+  if (httpCode == 200) {
+    Serial.println("[API] ID Confirmado en plataforma.");
+  } else {
+    Serial.printf("[API] Error al confirmar ID: %d\n", httpCode);
+  }
+  http.end();
+}

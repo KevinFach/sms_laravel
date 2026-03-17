@@ -1,0 +1,726 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// --- CONFIGURACIÓN PANTALLA OLED ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// --- CONFIGURACIÓN WIFI ---
+const char* ssid     = "Casa 2.4";
+const char* password = "1A2B3C4D5f";
+
+// --- CONFIGURACIÓN API ---
+const char* servidor = "http://mensajeria.51x.mx";
+const char* token    = "0exkKuCZsC";
+
+// --- PINES LILYGO T-SIM7600E ---
+#define MODEM_TX     27
+#define MODEM_RX     26
+#define MODEM_PWRKEY  4
+#define MODEM_BAUD   115200
+
+// --- ESTADO GLOBAL ---
+bool   modemOK      = false;
+bool   wifiOK       = false;
+int    smsTotales   = 0;
+int    smsEnviados  = 0;
+int    smsFallidos  = 0;
+String ultimoEstado = "";
+String ultimoError  = "";
+
+unsigned long ultimaConsulta = 0;
+const unsigned long intervaloConsulta = 10000;
+
+// ════════════════════════════════════════════════════════
+//  LOG DUAL: Serial + variable de estado
+// ════════════════════════════════════════════════════════
+void log(String msg) {
+  Serial.println("[FAST SMS] " + msg);
+}
+
+void logError(String razon) {
+  ultimoError = razon;
+  Serial.println("[ERROR] " + razon);
+}
+
+// ════════════════════════════════════════════════════════
+//  ANIMACIÓN: LOGO "FAST SMS" CON EFECTO TYPEWRITER
+// ════════════════════════════════════════════════════════
+void drawLogoScreen() {
+  // Fondo negro, texto aparece letra a letra
+  String textoBig = "FAST";
+  String textoSub = "SMS";
+
+  // Efecto: FAST aparece carácter a carácter
+  for (int i = 1; i <= (int)textoBig.length(); i++) {
+    display.clearDisplay();
+    display.setTextSize(3);
+    display.setTextColor(SSD1306_WHITE);
+    // Centrar "FAST" → ancho letra size3 = 18px, 4 letras = 72px → x = (128-72)/2 = 28
+    display.setCursor(28, 6);
+    display.print(textoBig.substring(0, i));
+    display.display();
+    delay(120);
+  }
+
+  delay(200);
+
+  // SMS aparece con efecto inverso (bloque blanco → texto negro)
+  for (int i = 1; i <= (int)textoSub.length(); i++) {
+    display.setTextSize(3);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(28, 6);
+    display.print(textoBig);
+
+    // Caja rellena detrás de SMS
+    int boxW = i * 18 + 4;
+    display.fillRect(26, 36, boxW, 24, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+    display.setCursor(28, 38);
+    display.print(textoSub.substring(0, i));
+    display.display();
+    delay(140);
+  }
+
+  delay(300);
+
+  // Parpadeo final del logo completo x3
+  for (int p = 0; p < 3; p++) {
+    display.invertDisplay(true);
+    delay(120);
+    display.invertDisplay(false);
+    delay(120);
+  }
+
+  delay(500);
+}
+
+// ════════════════════════════════════════════════════════
+//  PANTALLA DE BOOT CON BARRA DE PROGRESO
+// ════════════════════════════════════════════════════════
+void drawBootScreen(String paso, int progreso) {
+  display.clearDisplay();
+
+  // Logo pequeño arriba
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(4, 2);
+  display.print("FAST");
+
+  // Caja negra con "SMS" invertido
+  display.fillRect(72, 0, 54, 18, SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setCursor(74, 2);
+  display.print("SMS");
+
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+
+  // Separador
+  display.drawLine(0, 20, 128, 20, SSD1306_WHITE);
+
+  // Paso actual con puntos animados
+  int dots = (millis() / 300) % 4;
+  String animPaso = paso;
+  for (int i = 0; i < dots; i++) animPaso += ".";
+  if (animPaso.length() > 21) animPaso = animPaso.substring(0, 21);
+  display.setCursor(2, 25);
+  display.print(animPaso);
+
+  // Barra de progreso
+  display.drawRect(4, 40, 120, 10, SSD1306_WHITE);
+  int barW = map(progreso, 0, 100, 0, 116);
+  display.fillRect(6, 42, barW, 6, SSD1306_WHITE);
+
+  // Porcentaje
+  display.setCursor(54, 53);
+  display.print(String(progreso) + "%");
+
+  display.display();
+}
+
+// ════════════════════════════════════════════════════════
+//  HUD PRINCIPAL
+// ════════════════════════════════════════════════════════
+void drawHUD() {
+  display.clearDisplay();
+
+  // ── Cabecera con logo mini ──
+  display.fillRect(0, 0, 128, 13, SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setCursor(2, 3);
+  display.print("FAST SMS");
+
+  // Uptime
+  String upt = String(millis() / 60000) + "m" + String((millis() / 1000) % 60) + "s";
+  display.setCursor(128 - upt.length() * 6 - 2, 3);
+  display.print(upt);
+
+  display.setTextColor(SSD1306_WHITE);
+
+  // ── Fila estado WiFi + Modem ──
+  display.setCursor(2, 16);
+  display.print("WiFi:");
+  if (wifiOK) {
+    display.print("OK");
+  } else {
+    // Parpadeo si no está conectado
+    if ((millis() / 500) % 2 == 0) display.print("--");
+  }
+
+  display.setCursor(70, 16);
+  display.print("Modem:");
+  display.print(modemOK ? "OK" : "--");
+
+  // ── Separador ──
+  display.drawLine(0, 27, 128, 27, SSD1306_WHITE);
+
+  // ── Contadores SMS ──
+  display.setCursor(2, 30);
+  display.print("Total :");
+  display.print(smsTotales);
+
+  display.setCursor(2, 39);
+  display.print("OK    :");
+  display.print(smsEnviados);
+
+  display.setCursor(70, 39);
+  display.print("Err:");
+  display.print(smsFallidos);
+
+  // ── Separador ──
+  display.drawLine(0, 50, 128, 50, SSD1306_WHITE);
+
+  // ── Estado / último error ──
+  display.setCursor(2, 53);
+  String est = (ultimoError.length() > 0) ? "!" + ultimoError : ultimoEstado;
+  if (est.length() > 20) est = est.substring(0, 20);
+  display.print(est);
+
+  display.display();
+}
+
+// ════════════════════════════════════════════════════════
+//  PANTALLA: ENVIANDO SMS (con animación de señal)
+// ════════════════════════════════════════════════════════
+void drawSendingScreen(String numero, String id) {
+  display.clearDisplay();
+
+  // Cabecera
+  display.fillRect(0, 0, 128, 12, SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setCursor(10, 2);
+  display.print(">> ENVIANDO SMS <<");
+
+  display.setTextColor(SSD1306_WHITE);
+
+  // Número
+  display.setCursor(2, 15);
+  display.print("Para: ");
+  String num = numero;
+  if (num.length() > 15) num = num.substring(0, 15);
+  display.print(num);
+
+  // ID
+  display.setCursor(2, 25);
+  display.print("ID  : " + id);
+
+  // Animación de "señal de transmisión" con barras crecientes
+  int frame = (millis() / 200) % 5;
+  int baseX = 10;
+  int baseY = 50;
+  int barHeights[] = {4, 7, 10, 13, 16};
+  for (int b = 0; b < 5; b++) {
+    int h = (b <= frame) ? barHeights[b] : 2;
+    display.fillRect(baseX + b * 10, baseY - h, 7, h, SSD1306_WHITE);
+  }
+
+  // Texto parpadeante "TX..."
+  if ((millis() / 400) % 2 == 0) {
+    display.setCursor(70, 44);
+    display.print("TX...");
+  }
+
+  display.display();
+}
+
+// ════════════════════════════════════════════════════════
+//  PANTALLA: SMS OK
+// ════════════════════════════════════════════════════════
+void drawSuccessScreen(String numero, String id) {
+  display.clearDisplay();
+
+  // Cabecera verde (invertida)
+  display.fillRect(0, 0, 128, 12, SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setCursor(22, 2);
+  display.print("SMS ENVIADO OK");
+
+  display.setTextColor(SSD1306_WHITE);
+
+  // Check mark grande dibujado con líneas
+  // \/ forma de checkmark
+  display.drawLine(20, 35, 28, 45, SSD1306_WHITE);
+  display.drawLine(21, 35, 29, 45, SSD1306_WHITE);
+  display.drawLine(28, 45, 44, 25, SSD1306_WHITE);
+  display.drawLine(29, 45, 45, 25, SSD1306_WHITE);
+
+  display.setCursor(54, 28);
+  display.print("Para:");
+  display.setCursor(54, 38);
+  String num = numero;
+  if (num.length() > 10) num = num.substring(0, 10);
+  display.print(num);
+
+  display.setCursor(54, 50);
+  display.print("ID: " + id);
+
+  display.display();
+  log("SMS ENVIADO CORRECTAMENTE a " + numero + " | ID: " + id);
+}
+
+// ════════════════════════════════════════════════════════
+//  PANTALLA: ERROR DE ENVÍO CON RAZÓN
+// ════════════════════════════════════════════════════════
+void drawErrorSMSScreen(String numero, String id, String razon) {
+  display.clearDisplay();
+
+  // Cabecera de error
+  display.fillRect(0, 0, 128, 12, SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setCursor(16, 2);
+  display.print("!! ERROR SMS !!");
+
+  display.setTextColor(SSD1306_WHITE);
+
+  // X grande dibujada
+  display.drawLine(12, 20, 26, 34, SSD1306_WHITE);
+  display.drawLine(13, 20, 27, 34, SSD1306_WHITE);
+  display.drawLine(26, 20, 12, 34, SSD1306_WHITE);
+  display.drawLine(27, 20, 13, 34, SSD1306_WHITE);
+
+  // Info
+  display.setCursor(36, 18);
+  display.print("Para: ");
+  String num = numero;
+  if (num.length() > 10) num = num.substring(0, 10);
+  display.print(num);
+
+  display.setCursor(36, 28);
+  display.print("ID: " + id);
+
+  // Separador
+  display.drawLine(0, 38, 128, 38, SSD1306_WHITE);
+
+  // Razón del error (con wrap si es larga)
+  display.setCursor(2, 42);
+  display.print("Causa:");
+  display.setCursor(2, 52);
+  String r = razon;
+  if (r.length() > 20) r = r.substring(0, 20);
+  display.print(r);
+
+  display.display();
+
+  // También en serial
+  logError("FALLO SMS a " + numero + " | ID: " + id + " | Causa: " + razon);
+}
+
+// ════════════════════════════════════════════════════════
+//  PANTALLA: ERROR GENERAL (WiFi / API)
+// ════════════════════════════════════════════════════════
+void drawSystemErrorScreen(String titulo, String detalle) {
+  display.clearDisplay();
+  display.drawRect(0, 0, 128, 64, SSD1306_WHITE);
+  display.drawRect(2, 2, 124, 60, SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(28, 8);
+  display.print("! SISTEMA !");
+
+  display.drawLine(4, 19, 124, 19, SSD1306_WHITE);
+  display.setCursor(4, 24);
+  display.print(titulo);
+  display.setCursor(4, 36);
+  if (detalle.length() > 18) {
+    display.print(detalle.substring(0, 18));
+    display.setCursor(4, 47);
+    display.print(detalle.substring(18, 36));
+  } else {
+    display.print(detalle);
+  }
+  display.display();
+  logError(titulo + " - " + detalle);
+}
+
+// ════════════════════════════════════════════════════════
+//  PANTALLA IDLE: animación de espera
+// ════════════════════════════════════════════════════════
+void drawIdleAnimation() {
+  // Solo actualiza la barra de estado inferior con spinner
+  // No redibuja todo para no parpadear
+  static int spinIdx = 0;
+  const char spinner[] = {'|', '/', '-', '\\'};
+
+  display.fillRect(0, 51, 128, 13, SSD1306_BLACK);
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(2, 54);
+
+  String espera = "Esperando mensajes ";
+  espera += spinner[spinIdx % 4];
+  display.print(espera);
+  display.display();
+  spinIdx++;
+}
+
+// ════════════════════════════════════════════════════════
+//  SETUP
+// ════════════════════════════════════════════════════════
+void setup() {
+  Serial.begin(115200);
+  log("=============================");
+  log("     FAST SMS GATEWAY        ");
+  log("=============================");
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    log("ERROR: Pantalla OLED no detectada");
+  }
+
+  // ── LOGO ANIMADO ──
+  drawLogoScreen();
+
+  // ── BOOT: Modem ──
+  drawBootScreen("Iniciando sistema", 10);
+  log("Inicializando sistema...");
+  delay(400);
+
+  Serial1.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
+  drawBootScreen("Encendiendo modem", 25);
+  log("Encendiendo modem SIM7600E...");
+
+  pinMode(MODEM_PWRKEY, OUTPUT);
+  digitalWrite(MODEM_PWRKEY, LOW); delay(100);
+  digitalWrite(MODEM_PWRKEY, HIGH); delay(1000);
+  digitalWrite(MODEM_PWRKEY, LOW);
+
+  drawBootScreen("Esperando modem", 45);
+  log("Esperando respuesta del modem...");
+  delay(5000);
+
+  // Verificar modem con AT
+  Serial1.println("AT");
+  delay(300);
+  Serial1.println("AT+CMGF=1");
+  delay(500);
+
+  String respAT = "";
+  unsigned long t = millis();
+  while (millis() - t < 2000) {
+    while (Serial1.available()) respAT += (char)Serial1.read();
+  }
+  modemOK = (respAT.indexOf("OK") != -1);
+
+  if (modemOK) {
+    log("Modem OK - Respuesta: " + respAT);
+  } else {
+    logError("Modem no respondio correctamente. Respuesta: '" + respAT + "'");
+  }
+
+  drawBootScreen("Conectando WiFi", 65);
+  log("Conectando a WiFi: " + String(ssid));
+  conectarWiFi();
+
+  drawBootScreen("Configurando API", 85);
+  log("Servidor API: " + String(servidor));
+  delay(400);
+
+  drawBootScreen("Listo!", 100);
+  log("Sistema listo. Iniciando loop.");
+  delay(800);
+
+  ultimoEstado = "En espera";
+  drawHUD();
+}
+
+// ════════════════════════════════════════════════════════
+//  LOOP
+// ════════════════════════════════════════════════════════
+void loop() {
+  // Reconexión WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    wifiOK = false;
+    log("WiFi desconectado. Reconectando...");
+    drawSystemErrorScreen("WiFi perdido", "Reconectando...");
+    delay(1500);
+    conectarWiFi();
+  }
+
+  // Animación idle mientras espera
+  if (millis() - ultimaConsulta > (intervaloConsulta - 1000)) {
+    drawIdleAnimation();
+    delay(200);
+  }
+
+  // Consulta API cada intervalo
+  if (millis() - ultimaConsulta > intervaloConsulta) {
+    ultimoEstado = "Consultando API";
+    ultimoError = "";
+    drawHUD();
+    log("Consultando pendientes...");
+    consultarPendientes();
+    ultimaConsulta = millis();
+    ultimoEstado = "En espera";
+    drawHUD();
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  WIFI
+// ════════════════════════════════════════════════════════
+void conectarWiFi() {
+  WiFi.begin(ssid, password);
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(500);
+    intentos++;
+    // Actualizar barra de boot si estamos en setup (progreso 65-80)
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiOK = true;
+    log("WiFi conectado. IP: " + WiFi.localIP().toString());
+  } else {
+    wifiOK = false;
+    logError("No se pudo conectar a WiFi '" + String(ssid) + "' tras " + String(intentos) + " intentos");
+    drawSystemErrorScreen("WiFi fallido", String(ssid));
+    delay(2000);
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  CONSULTAR API
+// ════════════════════════════════════════════════════════
+void consultarPendientes() {
+  if (WiFi.status() != WL_CONNECTED) {
+    logError("Sin WiFi, no se puede consultar la API");
+    return;
+  }
+
+  HTTPClient http;
+  String url = String(servidor) + "/api/pendientes?token=" + token;
+  log("GET " + url);
+
+  http.begin(url);
+  http.setTimeout(8000);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String respuesta = http.getString();
+    respuesta.trim();
+    log("Respuesta API (" + String(respuesta.length()) + " bytes)");
+
+    if (respuesta.length() > 5) {
+      procesarRespuesta(respuesta);
+    } else {
+      log("Sin mensajes pendientes.");
+    }
+  } else if (httpCode > 0) {
+    String razon = "HTTP " + String(httpCode);
+    if (httpCode == 401) razon = "Token invalido (401)";
+    else if (httpCode == 404) razon = "Endpoint no existe (404)";
+    else if (httpCode == 500) razon = "Error servidor (500)";
+    logError("API respondio: " + razon);
+    drawSystemErrorScreen("API Error", razon);
+    delay(2000);
+  } else {
+    String razon = "Sin respuesta / Timeout";
+    if (httpCode == HTTPC_ERROR_CONNECTION_REFUSED) razon = "Conexion rechazada";
+    else if (httpCode == HTTPC_ERROR_SEND_HEADER_FAILED) razon = "Fallo cabecera HTTP";
+    else if (httpCode == HTTPC_ERROR_NOT_CONNECTED)  razon = "No conectado";
+    logError("Error HTTP: " + razon + " (code " + String(httpCode) + ")");
+    drawSystemErrorScreen("API Sin resp.", razon);
+    delay(2000);
+  }
+
+  http.end();
+}
+
+// ════════════════════════════════════════════════════════
+//  PROCESAR RESPUESTA
+// ════════════════════════════════════════════════════════
+void procesarRespuesta(String respuesta) {
+  int startIdx = 0;
+  while (startIdx < respuesta.length()) {
+    int endIdx = respuesta.indexOf('\n', startIdx);
+    String linea = (endIdx == -1) ? respuesta.substring(startIdx) : respuesta.substring(startIdx, endIdx);
+    startIdx = (endIdx == -1) ? respuesta.length() : endIdx + 1;
+
+    linea.trim();
+    if (linea.length() < 5) continue;
+
+    int p1 = linea.indexOf('|');
+    int p2 = linea.indexOf('|', p1 + 1);
+
+    if (p1 == -1 || p2 == -1) {
+      logError("Formato incorrecto en linea: " + linea);
+      continue;
+    }
+
+    String id      = linea.substring(0, p1);
+    String numero  = linea.substring(p1 + 1, p2);
+    String mensaje = linea.substring(p2 + 1);
+
+    smsTotales++;
+    log("Procesando ID:" + id + " | Para:" + numero + " | Msg:" + mensaje);
+
+    // Animación de envío
+    unsigned long tSend = millis();
+    while (millis() - tSend < 1200) {
+      drawSendingScreen(numero, id);
+      delay(100);
+    }
+
+    String razonFallo = "";
+    bool ok = enviarSMS(numero, mensaje, razonFallo);
+
+    if (ok) {
+      smsEnviados++;
+      ultimoError = "";
+      ultimoEstado = "OK: " + numero;
+      drawSuccessScreen(numero, id);
+      confirmarProcesado(id);
+      delay(1800);
+    } else {
+      smsFallidos++;
+      ultimoError = razonFallo;
+      drawErrorSMSScreen(numero, id, razonFallo);
+      delay(2500);
+    }
+
+    drawHUD();
+    delay(300);
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  ENVIAR SMS — retorna razón de fallo
+// ════════════════════════════════════════════════════════
+bool enviarSMS(String numero, String mensaje, String &razonFallo) {
+  // Validaciones previas
+  if (!modemOK) {
+    razonFallo = "Modem no iniciado";
+    return false;
+  }
+  if (numero.length() < 8) {
+    razonFallo = "Numero invalido";
+    return false;
+  }
+  if (mensaje.length() == 0) {
+    razonFallo = "Mensaje vacio";
+    return false;
+  }
+  if (mensaje.length() > 160) {
+    log("Advertencia: mensaje >160 chars, puede dividirse.");
+  }
+
+  // Enviar comando AT
+  Serial1.print("AT+CMGS=\"");
+  Serial1.print(numero);
+  Serial1.println("\"");
+  delay(500);
+
+  // Leer prompt '>'
+  String promptResp = "";
+  unsigned long tPrompt = millis();
+  while (millis() - tPrompt < 3000) {
+    while (Serial1.available()) promptResp += (char)Serial1.read();
+    if (promptResp.indexOf('>') != -1) break;
+  }
+  if (promptResp.indexOf('>') == -1) {
+    razonFallo = "Sin prompt del modem";
+    logError("Modem no envio prompt '>'. Respuesta: " + promptResp);
+    return false;
+  }
+
+  Serial1.print(mensaje);
+  delay(100);
+  Serial1.write(26); // Ctrl+Z
+
+  // Esperar OK / ERROR / CMS ERROR
+  unsigned long start = millis();
+  String resp = "";
+  while (millis() - start < 10000) {
+    while (Serial1.available()) resp += (char)Serial1.read();
+
+    if (resp.indexOf("OK") != -1) {
+      log("Modem respondio OK para " + numero);
+      return true;
+    }
+    if (resp.indexOf("ERROR") != -1) {
+      // Detectar tipo de error CMS
+      if (resp.indexOf("+CMS ERROR:") != -1) {
+        int idx = resp.indexOf("+CMS ERROR:") + 11;
+        String cmsCode = resp.substring(idx);
+        cmsCode.trim();
+        // Solo el código numérico
+        int fin = cmsCode.indexOf('\n');
+        if (fin != -1) cmsCode = cmsCode.substring(0, fin);
+        cmsCode.trim();
+
+        // Traducir códigos CMS comunes
+        int code = cmsCode.toInt();
+        if      (code == 1)   razonFallo = "Operacion no permitida";
+        else if (code == 10)  razonFallo = "SIM no insertada";
+        else if (code == 11)  razonFallo = "PIN requerido";
+        else if (code == 13)  razonFallo = "SIM falla";
+        else if (code == 21)  razonFallo = "Memoria SMS llena";
+        else if (code == 28)  razonFallo = "Sin servicio";
+        else if (code == 29)  razonFallo = "Error de red";
+        else if (code == 38)  razonFallo = "Red no disponible";
+        else if (code == 42)  razonFallo = "Red congestionada";
+        else if (code == 111) razonFallo = "Numero bloqueado";
+        else if (code == 128) razonFallo = "Numero invalido";
+        else if (code == 330) razonFallo = "Numero no existe";
+        else                  razonFallo = "CMS ERR " + cmsCode;
+
+        logError("CMS ERROR " + cmsCode + ": " + razonFallo);
+      } else {
+        razonFallo = "ERROR generico modem";
+        logError("Respuesta modem: " + resp);
+      }
+      return false;
+    }
+  }
+
+  razonFallo = "Timeout (10s sin resp)";
+  logError("Timeout esperando respuesta del modem para " + numero);
+  return false;
+}
+
+// ════════════════════════════════════════════════════════
+//  CONFIRMAR PROCESADO
+// ════════════════════════════════════════════════════════
+void confirmarProcesado(String id) {
+  if (WiFi.status() != WL_CONNECTED) {
+    logError("Sin WiFi, no se pudo confirmar ID " + id);
+    return;
+  }
+  HTTPClient http;
+  String urlConf = String(servidor) + "/api/mensaje/" + id + "/procesado?token=" + token;
+  log("Confirmando procesado ID: " + id);
+  http.begin(urlConf);
+  int code = http.GET();
+  log("Confirmacion HTTP: " + String(code));
+  http.end();
+}
