@@ -3,8 +3,9 @@
 namespace App\Providers;
 
 use App\Http\Middleware\ApiTokenCheck;
-use Illuminate\Support\ServiceProvider;
+use App\Http\Middleware\ChannelTokenCheck;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -22,5 +23,6 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Route::aliasMiddleware('api.token', ApiTokenCheck::class);
+        Route::aliasMiddleware('channel.token', ChannelTokenCheck::class);
     }
 }

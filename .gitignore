@@ -22,3 +22,16 @@ yarn-error.log
 /.vscode
 /.zed
 .github/workflows/lint.yml
+/imagenesClaude
+
+# AI/Agent Context and Config Files
+/.gemini
+/.mcp.json
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/boost.json
+/opencode.json
+
+# Zip files
+/*.zip

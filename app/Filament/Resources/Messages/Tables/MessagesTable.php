@@ -2,11 +2,14 @@
 
 namespace App\Filament\Resources\Messages\Tables;
 
+use App\Enums\MessageStatus;
+use App\Models\Message;
+use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
-use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
 class MessagesTable
@@ -15,29 +18,96 @@ class MessagesTable
     {
         return $table
             ->columns([
-                TextColumn::make('mensaje')
-                    ->searchable(),
-                TextColumn::make('numero')
-                    ->searchable(),
-                IconColumn::make('estatus')
-                    ->boolean(),
-                TextColumn::make('fecha')
-                    ->dateTime()
+                TextColumn::make('nombre')
+                    ->label('Nombre')
+                    ->searchable()
                     ->sortable(),
+
+                TextColumn::make('numero')
+                    ->label('Teléfono')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('mensaje')
+                    ->label('Mensaje')
+                    ->limit(40)
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('fecha_evento')
+                    ->label('Fecha Evento')
+                    ->date('d/m/Y')
+                    ->sortable(),
+
+                TextColumn::make('hora_evento')
+                    ->label('Hora Evento'),
+
+                TextColumn::make('fecha_envio')
+                    ->label('Envío Programado')
+                    ->date('d/m/Y')
+                    ->sortable(),
+
+                TextColumn::make('hora_envio')
+                    ->label('Hora Envío'),
+
+                TextColumn::make('status')
+                    ->label('Estatus')
+                    ->badge()
+                    ->sortable(),
+
+                TextColumn::make('client.nombre')
+                    ->label('Cliente')
+                    ->placeholder('—')
+                    ->toggleable(),
+
+                TextColumn::make('channel.nombre')
+                    ->label('Canal')
+                    ->badge()
+                    ->color('info')
+                    ->placeholder('—')
+                    ->toggleable(),
+
+                TextColumn::make('fecha')
+                    ->label('Creado')
+                    ->dateTime('d/m/Y H:i')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
                 TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
+
                 TextColumn::make('updated_at')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                //
+                SelectFilter::make('status')
+                    ->label('Estado')
+                    ->options(MessageStatus::options()),
+
+                SelectFilter::make('channel_id')
+                    ->label('Canal')
+                    ->relationship('channel', 'nombre'),
             ])
             ->recordActions([
                 EditAction::make(),
+
+                Action::make('cancelar')
+                    ->label('Cancelar')
+                    ->icon('heroicon-m-x-circle')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->visible(fn (Message $record): bool => ! $record->status->isFinal())
+                    ->action(function (Message $record): void {
+                        try {
+                            $record->transitionTo(MessageStatus::Cancelado);
+                        } catch (\DomainException) {
+                            // Estado final: no-op.
+                        }
+                    }),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([

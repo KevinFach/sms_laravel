@@ -1,10 +1,8 @@
 <?php
 
-use Livewire\Volt\Volt;
-use Laravel\Fortify\Features;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\MensajeController;
-
+use Laravel\Fortify\Features;
+use Livewire\Volt\Volt;
 
 Route::get('/', function () {
     return view('welcome');
@@ -43,12 +41,9 @@ Route::middleware([
     })->name('dashboard');
 });
 
-
+// Ejecutar migraciones desde el navegador (protegido: requiere sesión autenticada).
 Route::get('/actualizar-base-datos', function () {
-    // Ejecuta las migraciones
-    Artisan::call('migrate', ["--force" => true]);
-    return '<h1>¡Base de datos actualizada!</h1><br>' . nl2br(Artisan::output());
-});
+    Artisan::call('migrate', ['--force' => true]);
 
-
-// Route::get('/pendientes', [MensajeController::class, 'pendientes']);
+    return '<h1>¡Base de datos actualizada!</h1><br>'.nl2br(Artisan::output());
+})->middleware(['auth']);

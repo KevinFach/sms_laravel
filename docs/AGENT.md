@@ -59,6 +59,7 @@ Pint esta instalado como dependencia de desarrollo:
 Nota: No hay scripts de ESLint/Prettier configurados en `package.json` (solo `dev` y `build`).
 
 ### Tests
+
 Ejecutar todo:
 - `composer run test`
 - o `php artisan test`
