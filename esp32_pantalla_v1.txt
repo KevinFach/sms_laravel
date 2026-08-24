@@ -11,8 +11,8 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // --- CONFIGURACIÓN WIFI ---
-const char* ssid     = "Casa 2.4";
-const char* password = "1A2B3C4D5f";
+const char* ssid     = "meduzilla 2.4";
+const char* password = "valioqueso";
 
 // --- CONFIGURACIÓN API V1 ---
 const char* servidor    = "https://sms.51x.mx";
@@ -406,61 +406,22 @@ void setup() {
   delay(400);
 
   Serial1.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
-  delay(1000); // Dar un segundo para estabilizar la energía al conectar el cable USB
-  
-  // Limpiar buffer inicial
-  while (Serial1.available()) Serial1.read();
-  
-  // Comprobar si ya está encendido
-  Serial1.println("AT");
-  delay(300);
-  bool yaEncendido = false;
-  String resInit = "";
-  while(Serial1.available()) resInit += (char)Serial1.read();
-  if(resInit.indexOf("OK") != -1) yaEncendido = true;
-  
-  if (!yaEncendido) {
-    drawBootScreen("Encendiendo modem", 25);
-    log("Encendiendo modem SIM7600E...");
-    pinMode(MODEM_PWRKEY, OUTPUT);
-    digitalWrite(MODEM_PWRKEY, LOW); delay(100);
-    digitalWrite(MODEM_PWRKEY, HIGH); delay(1000);
-    digitalWrite(MODEM_PWRKEY, LOW);
-  
-    drawBootScreen("Esperando modem", 45);
-    log("Esperando arranque del modem (hasta 15s)...");
-    
-    // Esperar dinámicamente hasta que responda o se acabe el tiempo (15 seg)
-    unsigned long startWait = millis();
-    bool arranco = false;
-    while (millis() - startWait < 15000) {
-      Serial1.println("AT");
-      delay(600);
-      String res = "";
-      while (Serial1.available()) res += (char)Serial1.read();
-      if (res.indexOf("OK") != -1) {
-        arranco = true;
-        break;
-      }
-    }
-    if (arranco) {
-      log("Modem arranco correctamente en " + String(millis() - startWait) + " ms");
-    } else {
-      logError("Advertencia: El modem no respondio tras 15 segundos.");
-    }
-  } else {
-    log("El modem ya estaba encendido.");
-  }
+  drawBootScreen("Encendiendo modem", 25);
+  log("Encendiendo modem SIM7600E...");
 
-  // Limpiar buffer nuevamente
-  while (Serial1.available()) Serial1.read();
+  pinMode(MODEM_PWRKEY, OUTPUT);
+  digitalWrite(MODEM_PWRKEY, LOW); delay(100);
+  digitalWrite(MODEM_PWRKEY, HIGH); delay(1000);
+  digitalWrite(MODEM_PWRKEY, LOW);
 
-  // Configurar modem con AT
+  drawBootScreen("Esperando modem", 45);
+  log("Esperando respuesta del modem...");
+  delay(5000);
+
+  // Verificar modem con AT
   Serial1.println("AT");
   delay(300);
   Serial1.println("AT+CMGF=1");
-  delay(300);
-  Serial1.println("AT+CSCLK=0"); // Desactivar modo de ahorro de energia
   delay(500);
 
   String respAT = "";
@@ -674,14 +635,6 @@ bool enviarSMS(String numero, String mensaje, String &razonFallo) {
     log("Advertencia: mensaje >160 chars, puede dividirse.");
   }
 
-  // Limpiar buffer de posibles mensajes acumulados de la red
-  while (Serial1.available()) Serial1.read();
-
-  // Asegurar que el modem está despierto enviando AT primero
-  Serial1.println("AT");
-  delay(100);
-  while (Serial1.available()) Serial1.read();
-
   // Enviar comando AT
   Serial1.print("AT+CMGS=\"");
   Serial1.print(numero);
@@ -694,7 +647,6 @@ bool enviarSMS(String numero, String mensaje, String &razonFallo) {
   while (millis() - tPrompt < 3000) {
     while (Serial1.available()) promptResp += (char)Serial1.read();
     if (promptResp.indexOf('>') != -1) break;
-    delay(10); // Evitar colapso del watchdog
   }
   if (promptResp.indexOf('>') == -1) {
     razonFallo = "Sin prompt del modem";
