@@ -10,3 +10,6 @@ Artisan::command('inspire', function () {
 
 // Encola los mensajes vencidos cada minuto (cola activa de envíos).
 Schedule::command('messages:dispatch')->everyMinute()->withoutOverlapping();
+
+// Confirma contra el proveedor remoto los mensajes ya despachados a canales push.
+Schedule::command('messages:sync-remote')->everyMinute()->withoutOverlapping();

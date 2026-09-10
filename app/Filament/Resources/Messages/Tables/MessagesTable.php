@@ -4,10 +4,12 @@ namespace App\Filament\Resources\Messages\Tables;
 
 use App\Enums\MessageStatus;
 use App\Models\Message;
+use App\Services\Channels\ChannelDriverManager;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Notifications\Notification;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
@@ -101,11 +103,22 @@ class MessagesTable
                     ->color('danger')
                     ->requiresConfirmation()
                     ->visible(fn (Message $record): bool => ! $record->status->isFinal())
-                    ->action(function (Message $record): void {
+                    ->action(function (Message $record, ChannelDriverManager $drivers): void {
+                        // En canales push hay que frenar el envío del lado del proveedor.
+                        $frenado = $drivers->forMessage($record)->cancel($record);
+
                         try {
                             $record->transitionTo(MessageStatus::Cancelado);
                         } catch (\DomainException) {
                             // Estado final: no-op.
+                        }
+
+                        if (! $frenado) {
+                            Notification::make()
+                                ->title('Cancelado localmente')
+                                ->body('El proveedor ya había despachado el mensaje, así que el SMS podría salir de todos modos.')
+                                ->warning()
+                                ->send();
                         }
                     }),
             ])

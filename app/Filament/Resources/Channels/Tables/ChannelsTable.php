@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Channels\Tables;
 
+use App\Models\Channel;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -42,6 +43,12 @@ class ChannelsTable
                     ->counts('messages')
                     ->badge()
                     ->color('info'),
+
+                TextColumn::make('device_id')
+                    ->label('Device ID (51x)')
+                    ->state(fn (Channel $record): ?string => $record->configValue('device_id'))
+                    ->copyable()
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 TextColumn::make('clave')
                     ->label('Clave')

@@ -23,6 +23,7 @@ class Message extends Model
         'msg_id',
         'client_id',
         'channel_id',
+        'external_id',
         'error_message',
         'sent_at',
         'fecha_evento',
@@ -146,6 +147,27 @@ class Message extends Model
      |------------------------------------------------------------------ */
 
     /**
+     * Condición "la hora programada ya venció" (o no hay programación).
+     *
+     * Se arma con comparaciones portables en vez de `TIMESTAMP(...)`, que solo
+     * existe en MySQL y rompe la suite de tests (SQLite).
+     */
+    protected static function applyDueSchedule($query): void
+    {
+        $query->where(function ($q) {
+            $q->whereNull('fecha_envio')
+                ->orWhere('fecha_envio', '<', today())
+                ->orWhere(function ($qq) {
+                    $qq->whereDate('fecha_envio', today())
+                        ->where(function ($q3) {
+                            $q3->whereNull('hora_envio')
+                                ->orWhere('hora_envio', '<=', now()->format('H:i:s'));
+                        });
+                });
+        });
+    }
+
+    /**
      * Mensajes candidatos a encolarse: por_enviar/programado cuya hora ya llegó
      * (o sin programación). Entrada del dispatcher.
      */
@@ -153,10 +175,7 @@ class Message extends Model
     {
         return $query
             ->whereIn('status', [MessageStatus::PorEnviar->value, MessageStatus::Programado->value])
-            ->where(function ($q) {
-                $q->whereNull('fecha_envio')
-                    ->orWhereRaw("TIMESTAMP(fecha_envio, COALESCE(hora_envio, '00:00:00')) <= NOW()");
-            });
+            ->tap(fn ($q) => static::applyDueSchedule($q));
     }
 
     /**
@@ -169,12 +188,17 @@ class Message extends Model
             $q->where('status', MessageStatus::EnCola->value)
                 ->orWhere(function ($qq) {
                     $qq->whereIn('status', [MessageStatus::PorEnviar->value, MessageStatus::Programado->value])
-                        ->where(function ($q3) {
-                            $q3->whereNull('fecha_envio')
-                                ->orWhereRaw("TIMESTAMP(fecha_envio, COALESCE(hora_envio, '00:00:00')) <= NOW()");
-                        });
+                        ->tap(fn ($q3) => static::applyDueSchedule($q3));
                 });
         });
+    }
+
+    /** Mensajes ya despachados a un canal remoto, pendientes de confirmar su estado. */
+    public function scopeAwaitingRemoteConfirmation($query)
+    {
+        return $query
+            ->where('status', MessageStatus::EnCola->value)
+            ->whereNotNull('external_id');
     }
 
     /** Alias de compatibilidad (código previo llamaba a readyToSend). */
