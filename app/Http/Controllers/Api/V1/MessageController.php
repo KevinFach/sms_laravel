@@ -8,6 +8,7 @@ use App\Http\Requests\BulkMessageRequest;
 use App\Http\Requests\StoreMessageRequest;
 use App\Models\Client;
 use App\Models\Message;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 
 /**
@@ -26,7 +27,7 @@ class MessageController extends Controller
             'nombre' => $data['nombre'] ?? null,
             'mensaje' => $data['mensaje'],
             'numero' => $data['numero'],
-            'client_id' => $client?->id,
+            'client_id' => $client->id,
             'fecha_envio' => $data['fecha_envio'] ?? null,
             'hora_envio' => $data['hora_envio'] ?? null,
         ]);
@@ -50,7 +51,7 @@ class MessageController extends Controller
                 'nombre' => $item['nombre'] ?? null,
                 'mensaje' => $item['mensaje'],
                 'numero' => $item['numero'],
-                'client_id' => $client?->id,
+                'client_id' => $client->id,
                 'fecha_envio' => $item['fecha_envio'] ?? $data['fecha_envio'] ?? null,
                 'hora_envio' => $item['hora_envio'] ?? $data['hora_envio'] ?? null,
             ]);
@@ -123,24 +124,27 @@ class MessageController extends Controller
      |  Helpers
      |------------------------------------------------------------------ */
 
-    private function resolveClient(Request $request): ?Client
+    /**
+     * Cliente vinculado al usuario del token. Sin cliente no hay acceso: evita que un
+     * usuario recién registrado vea o cree mensajes fuera de cualquier cliente.
+     */
+    private function resolveClient(Request $request): Client
     {
-        $user = $request->user();
+        $client = Client::where('user_id', $request->user()->id)->first();
 
-        return $user ? Client::where('user_id', $user->id)->first() : null;
-    }
-
-    /** Query de mensajes aislada al cliente autenticado (si tiene uno). */
-    private function scopedQuery(Request $request)
-    {
-        $client = $this->resolveClient($request);
-        $query = Message::query();
-
-        if ($client) {
-            $query->where('client_id', $client->id);
+        if (! $client) {
+            throw new HttpResponseException(response()->json([
+                'error' => 'Tu usuario no está vinculado a un cliente. Contacta al administrador.',
+            ], 403));
         }
 
-        return $query;
+        return $client;
+    }
+
+    /** Query de mensajes aislada al cliente autenticado. */
+    private function scopedQuery(Request $request)
+    {
+        return Message::query()->where('client_id', $this->resolveClient($request)->id);
     }
 
     /**
