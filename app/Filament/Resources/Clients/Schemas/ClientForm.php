@@ -39,6 +39,14 @@ class ClientForm
                     ->placeholder('Usar canal predeterminado')
                     ->helperText('Si se deja vacío, los mensajes de este cliente salen por el canal predeterminado.'),
 
+                Select::make('channels')
+                    ->label('Dispositivos (API de integración)')
+                    ->relationship('channels', 'nombre')
+                    ->multiple()
+                    ->searchable()
+                    ->preload()
+                    ->helperText('ESP32 que este cliente puede consultar y usar desde la API de integración. Si se deja vacío, usa el canal asignado o el predeterminado.'),
+
                 Select::make('user_id')
                     ->label('Usuario del panel')
                     ->relationship('user', 'name')

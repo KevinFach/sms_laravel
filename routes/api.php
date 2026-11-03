@@ -1,5 +1,8 @@
 <?php
 
+use App\Http\Controllers\Api\Integration\DeviceController as IntegrationDeviceController;
+use App\Http\Controllers\Api\Integration\MessageController as IntegrationMessageController;
+use App\Http\Controllers\Api\Integration\UsageController as IntegrationUsageController;
 use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\MessageController;
 use App\Http\Controllers\MensajeController;
@@ -32,6 +35,21 @@ Route::prefix('v1')->group(function () {
         Route::match(['get', 'post'], '/messages/{id}/enviado', [GatewayController::class, 'enviado']);
         Route::match(['get', 'post'], '/messages/{id}/error', [GatewayController::class, 'error']);
     });
+});
+
+/*
+|--------------------------------------------------------------------------
+| API de integración (sistemas externos como notifica_ya)
+|--------------------------------------------------------------------------
+| Autenticada con API key de cliente (header X-API-Key). Contrato compatible
+| con 51x.dev para que el integrador use el mismo cliente HTTP en ambos.
+*/
+Route::middleware('client.key')->group(function () {
+    Route::get('/devices', [IntegrationDeviceController::class, 'index']);
+    Route::post('/messages', [IntegrationMessageController::class, 'store']);
+    Route::get('/messages/{id}', [IntegrationMessageController::class, 'show']);
+    Route::post('/messages/{id}/cancel', [IntegrationMessageController::class, 'cancel']);
+    Route::get('/usage', IntegrationUsageController::class);
 });
 
 /*

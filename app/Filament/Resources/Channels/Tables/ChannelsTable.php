@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Channels\Tables;
 
+use App\Models\Channel;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -32,6 +33,17 @@ class ChannelsTable
                     ->label('Estado')
                     ->badge()
                     ->color(fn (string $state): string => $state === 'activo' ? 'success' : 'gray'),
+
+                IconColumn::make('connected')
+                    ->label('Conectado')
+                    ->getStateUsing(fn (Channel $record): bool => $record->isConnected())
+                    ->boolean(),
+
+                TextColumn::make('last_seen_at')
+                    ->label('Última conexión')
+                    ->since()
+                    ->sortable()
+                    ->placeholder('Nunca'),
 
                 IconColumn::make('is_default')
                     ->label('Predeterminado')

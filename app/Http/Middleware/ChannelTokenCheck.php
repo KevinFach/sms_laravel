@@ -41,6 +41,8 @@ class ChannelTokenCheck
             ], 401);
         }
 
+        $channel->recordHeartbeat($request->ip());
+
         $request->attributes->set('channel', $channel);
 
         return $next($request);

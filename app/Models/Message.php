@@ -21,6 +21,7 @@ class Message extends Model
         'status',
         'fecha',
         'msg_id',
+        'external_ref',
         'client_id',
         'channel_id',
         'error_message',

@@ -48,6 +48,28 @@ enum MessageStatus: string implements HasColor, HasLabel
         };
     }
 
+    /** Estado en el contrato de la API de integración (compatible con 51x.dev). */
+    public function toIntegration(): string
+    {
+        return match ($this) {
+            self::Programado => 'scheduled',
+            self::PorEnviar, self::EnCola => 'pending',
+            self::Enviado => 'sent',
+            self::Error => 'failed',
+            self::Cancelado => 'cancelled',
+        };
+    }
+
+    /**
+     * Estados internos que corresponden a un estado de la API de integración.
+     *
+     * @return array<int, self>
+     */
+    public static function fromIntegration(string $status): array
+    {
+        return array_values(array_filter(self::cases(), fn (self $case): bool => $case->toIntegration() === $status));
+    }
+
     /** Contrato Filament\Support\Contracts\HasLabel. */
     public function getLabel(): string
     {
